@@ -321,7 +321,7 @@ class DeepLabV3(nn.Module):
         # 增加了2个通道用于预测w2d
         mask,binary_code,w2d_raw = torch.split(output,[1, self.num_classes - 3, 2],1)
         # 使用 softplus 保证权重为正数（EPro-PnP的要求）
-        w2d = torch.sigmoid(w2d_raw) * 10.0
+        w2d = F.softplus(w2d_raw) + 1e-4
         return mask, binary_code, w2d
 
 class FixedSizeList:
@@ -561,8 +561,7 @@ class HccePose_BF_Net(nn.Module):
         # 分离前、后表面的 w2d，并用 mask 屏蔽背景
         pred_w2d = pred_w2d.permute(0, 2, 3, 1) # [B, H, W, 4]
         pred_w2d = pred_w2d * pred_mask_bin.unsqueeze(-1)
-        pred_w2d_front = pred_w2d[..., :2]
-        pred_w2d_back = pred_w2d[..., 2:]
+        pred_w2d = pred_w2d[..., :2]
 
 
         pred_front_back_code = self.activation_function(pred_front_back_code)
@@ -595,8 +594,7 @@ class HccePose_BF_Net(nn.Module):
             'pred_back_code' : pred_back_code,
             'pred_front_code_raw' : pred_front_code_raw,
             'pred_back_code_raw' : pred_back_code_raw,
-            'pred_w2d_front': pred_w2d_front,  # 将预测的前表面 w2d 一并返回，供 PnP 求解器使用
-            'pred_w2d_back': pred_w2d_back,    # 将预测的后表面 w2d 一并返回，供 PnP 求解器使用
+            'pred_w2d': pred_w2d,  # 将预测的前表面 w2d 一并返回，供 PnP 求解器使用
         }
 
 def save_checkpoint(path, net, iteration_step, best_score, optimizer, max_to_keep, keypoints_ = None, w_optimizer = True):

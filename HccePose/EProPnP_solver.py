@@ -7,7 +7,7 @@ from EPro_PnP.levenberg_marquardt import LMSolver,RSLMSolver # 引入 RSLMSolver
 from EPro_PnP.camera import PerspectiveCamera     # 相机模型
 from EPro_PnP.cost_fun import AdaptiveHuberPnPCost      # 使用 Huber 鲁棒代价函数
 
-def solve_EPro_PnP(pred_front_np, pred_w2d_front_np, pred_mask_np, coord_image_np, cam_K):
+def solve_EPro_PnP(pred_front_np, pred_w2d_np, pred_mask_np, coord_image_np, cam_K):
     """
     使用 EPro-PnP 替换原 OpenCV 求解逻辑，引入尺度转换 (mm -> m)
     """
@@ -25,7 +25,7 @@ def solve_EPro_PnP(pred_front_np, pred_w2d_front_np, pred_mask_np, coord_image_n
     # 1. 提取正面点，并将 3D 坐标从毫米转换为米 ( / 1000.0)
     x3d_np = (pred_front_np[mask].astype(np.float32)) / 1000.0
     x2d_np = coord_image_np[mask].astype(np.float32)
-    w2d_np = pred_w2d_front_np[mask].astype(np.float32)
+    w2d_np = pred_w2d_np[mask].astype(np.float32)
 
     # pts_f = pred_front_np[mask].astype(np.float32)
     # pts_2d = coord_image_np[mask].astype(np.float32)
@@ -47,15 +47,17 @@ def solve_EPro_PnP(pred_front_np, pred_w2d_front_np, pred_mask_np, coord_image_n
     success_cv, rvec_cv, tvec_cv = cv2.solvePnP(
         x3d_np, x2d_np, cam_K, None, flags=cv2.SOLVEPNP_EPNP
     )
-    if success_cv:
-        rot_cv, _ = cv2.Rodrigues(rvec_cv)
-        quat_cv = R.from_matrix(rot_cv).as_quat() # Scipy 格式: [x, y, z, w]
-        # EPro-PnP (PyTorch3D) 格式: [w, x, y, z]
-        quat_pt = np.array([quat_cv[3], quat_cv[0], quat_cv[1], quat_cv[2]]) 
-        pose_init_np = np.concatenate([tvec_cv.flatten(), quat_pt])
-        pose_init = torch.from_numpy(pose_init_np).unsqueeze(0).to(device, dtype=torch.float32)
-    else:
-        pose_init = None
+    # 增加严格的容错处理
+    pose_init = None
+    if success_cv and rvec_cv is not None and tvec_cv is not None:
+        try:
+            rot_cv, _ = cv2.Rodrigues(rvec_cv)
+            quat_cv = R.from_matrix(rot_cv).as_quat() # Scipy: [x, y, z, w]
+            quat_pt = np.array([quat_cv[3], quat_cv[0], quat_cv[1], quat_cv[2]]) 
+            pose_init_np = np.concatenate([tvec_cv.flatten(), quat_pt])
+            pose_init = torch.from_numpy(pose_init_np).unsqueeze(0).to(device, dtype=torch.float32)
+        except:
+            pose_init = None
     # ======================================================================
     x3d = torch.from_numpy(x3d_np).unsqueeze(0).to(device)  # (1, 2N, 3)
     x2d = torch.from_numpy(x2d_np).unsqueeze(0).to(device)  # (1, 2N, 2)

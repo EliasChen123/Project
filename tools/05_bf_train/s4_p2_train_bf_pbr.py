@@ -72,15 +72,13 @@ def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.
                 pred_front_code_0 = pred_results['pred_front_code_obj']
                 pred_back_code_0 = pred_results['pred_back_code_obj']
                 # 获取前、后表面的预测权重
-                pred_w2d_front = pred_results['pred_w2d_front']
-                pred_w2d_back = pred_results['pred_w2d_back']
+                pred_w2d = pred_results['pred_w2d']
 
                 pred_mask_np = pred_mask.detach().cpu().numpy()
                 pred_front_code_0_np = pred_front_code_0.detach().cpu().numpy()
                 pred_back_code_0_np = pred_back_code_0.detach().cpu().numpy()
                 coord_image_np = coord_image.detach().cpu().numpy()                
-                pred_w2d_front_np = pred_w2d_front.detach().cpu().numpy()
-                pred_w2d_back_np = pred_w2d_back.detach().cpu().numpy()
+                pred_w2d_np = pred_w2d.detach().cpu().numpy()
                 # 遍历 batch 中的每一张图片
                 for i in range(pred_mask_np.shape[0]):
                     cam_R_m2c_i = cam_R_m2c[i].detach().cpu().numpy()
@@ -89,7 +87,7 @@ def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.
                     # 调用修改好的 EPro-PnP
                     info = solve_EPro_PnP(
                         pred_front_code_0_np[i],
-                        pred_w2d_front_np[i], 
+                        pred_w2d_np[i], 
                         pred_mask_np[i], 
                         coord_image_np[i], 
                         cam_K[i]
@@ -446,8 +444,7 @@ if __name__ == '__main__':
                     
                     # 3. 拆分前向、后向 2D 权重
                     pred_w2d_permuted = pred_w2d.permute(0, 2, 3, 1) # [B, H, W, 4]
-                    w2d_front = pred_w2d_permuted[..., :2]
-                    w2d_back = pred_w2d_permuted[..., 2:]
+                    w2d = pred_w2d_permuted[..., :2]
 
                     # 4. 生成原图尺度下的 2D 绝对坐标网格
                     B, H_out, W_out, _ = pred_front_xyz.shape
@@ -486,7 +483,7 @@ if __name__ == '__main__':
                             loss_pose = 0.0 * pred_w2d.sum()
                         else:
                             # 预热结束后，引入 PnP Loss，初始权重给小一点（根据前向传播的量级，1e-4 比较合适）
-                            pose_loss_weight = 1e-3
+                            pose_loss_weight = 0.1
                             
                             valid_x3d = []
                             valid_x2d = []
@@ -515,15 +512,17 @@ if __name__ == '__main__':
                                 # 解释：网络预测的 3D 点必须接收 EPro-PnP 传回的梯度，不能 detach！
                                 x3d_i = pred_front_xyz[i, y_idx, x_idx, :].float() / 1000.0 
                                 x2d_i = coord_2d[i, y_idx, x_idx, :].float()
-                                w2d_i = w2d_front[i, y_idx, x_idx, :].float() # 只取前表面权重
+                                w2d_i = w2d[i, y_idx, x_idx, :].float() # 只取前表面权重
 
                                 # ★ 核心加速操作：Padding 对齐所有图片的大小 ★
                                 # 当 w2d 填充为 0 时，PnP 算法会自动忽略这些背景填充点，完全等效于变长输入
                                 N_cur = x3d_i.shape[0]
                                 pad_len = max_pts - N_cur # 只用填补到 max_pts
-                                
+
                                 if pad_len > 0:
-                                    x3d_i = torch.cat([x3d_i, torch.zeros((pad_len, 3), device=rgb_c.device)], dim=0)
+                                    pad_x3d = torch.zeros((pad_len, 3), device=rgb_c.device)
+                                    pad_x3d[:, 2] = 1.0  # 🌟 将深度设为1，避免透视投影除以0
+                                    x3d_i = torch.cat([x3d_i, pad_x3d], dim=0)
                                     x2d_i = torch.cat([x2d_i, torch.zeros((pad_len, 2), device=rgb_c.device)], dim=0)
                                     w2d_i = torch.cat([w2d_i, torch.zeros((pad_len, 2), device=rgb_c.device)], dim=0)
                                     
@@ -549,37 +548,16 @@ if __name__ == '__main__':
                                 pnp_cost_fun.set_param(batched_x2d, batched_w2d)
                                 
                                 # 唯一一次调用！此时 GPU 矩阵乘法单元满载，且无需保留多个冗余计算图
-                                # 【修改】：显式添加 with_pose_opt_plus=True，并接收前三个返回值的第三个（pose_opt_plus）
-                                # _, _, _, _, batched_logweights, batched_cost = pnp_solver.monte_carlo_forward(
-                                #     batched_x3d, batched_x2d, batched_w2d, camera, pnp_cost_fun,
-                                #     pose_init=batched_pose, force_init_solve=True
-                                # )
                                 _, _, batched_pose_opt_plus, _, batched_logweights, batched_cost = pnp_solver.monte_carlo_forward(
                                     batched_x3d, batched_x2d, batched_w2d, camera, pnp_cost_fun,
                                     pose_init=batched_pose, force_init_solve=True, with_pose_opt_plus=True
                                 )
                                 # 排除填充造成的 0 权重影响，计算真实的均值作为归一化因子
-                                valid_mask = (batched_w2d > 0).float()
-                                norm_factor_all = batched_w2d.sum() / valid_mask.sum().clamp(min=1.0) + 1e-4
-                                # 1. 蒙特卡洛分布损失 (Monte Carlo Loss)
-                                loss_mc = pose_loss_fn(batched_logweights, batched_cost, norm_factor_all)
-                                points_count = valid_mask.sum()
-                                if points_count > 0:
-                                    loss_mc = loss_mc / points_count
-                                loss_mc = torch.clamp(loss_mc, max=100.0)
-                                # 【新增】：2. 平移误差损失 (Translation Huber Loss)
-                                # pose_opt_plus 的前三维是平移(tx, ty, tz)
-                                loss_t = (batched_pose_opt_plus[:, :3] - batched_pose[:, :3]).norm(dim=-1)
-                                beta = 0.05
-                                loss_t = torch.where(loss_t < beta, 0.5 * loss_t.square() / beta, loss_t - 0.5 * beta).mean()
-
-                                # 【新增】：3. 旋转误差损失 (Rotation Loss)
-                                # pose_opt_plus 的后四维是四元数
-                                dot_quat = (batched_pose_opt_plus[:, None, 3:] @ batched_pose[:, 3:, None]).squeeze(-1).squeeze(-1)
-                                loss_r = (1 - dot_quat.square()) * 2
-                                loss_r = loss_r.mean()
-                                # 【修改】：将蒙特卡洛分布损失、平移、旋转误差综合到一起
-                                loss_pose = loss_mc + 1.0 * loss_t + 1.0 * loss_r
+                                loss_mc = pose_loss_fn(batched_logweights, batched_cost)
+                                # 可以按有效图片的数量求个均值
+                                loss_pose = loss_mc.mean()
+                                # 限制最大值防止早期偶尔爆点
+                                loss_pose = torch.clamp(loss_pose, max=200.0)
                             else:
                                 loss_pose = 0.0 * pred_w2d.sum()
                     # === 损失融合 ===
@@ -588,9 +566,6 @@ if __name__ == '__main__':
                         3*torch.sum(current_loss['Back_L1Losses']) ,
                         current_loss['mask_loss'],
                     ]
-                    # 将位姿损失加入总 Loss，可以给一个初始权重（如 0.1 或 1.0）
-
-                    pose_loss_weight = 0.1
                     loss = l_l[0] + l_l[1] + l_l[2] + pose_loss_weight * loss_pose
                     loss = loss / accumulation_steps  # 1. 损失归一化
 
