@@ -6,5 +6,5 @@ imgui.ini
 yolo11x.pt
 yolo11n.pt
 .polyscope.ini
+*.log
 
-.gitignore
