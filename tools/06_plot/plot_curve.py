@@ -80,7 +80,7 @@ def save_single_plot(x, y, title, ylabel, filename, color, output_dir):
     plt.xlabel('Iteration Steps')
     plt.ylabel(ylabel)
     plt.grid(True, linestyle='--', alpha=0.6)
-    # plt.ylim(-0.05, 10000)
+    plt.ylim(-0.05, 50)
     plt.legend()
     plt.tight_layout()
     

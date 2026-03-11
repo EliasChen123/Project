@@ -62,8 +62,18 @@ def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.
                 mask_vis_c=mask_vis_c.to('cuda:'+CUDA_DEVICE, non_blocking = True)
                 GT_Front_hcce = GT_Front_hcce.to('cuda:'+CUDA_DEVICE, non_blocking = True)
                 GT_Back_hcce = GT_Back_hcce.to('cuda:'+CUDA_DEVICE, non_blocking = True)
-                Bbox = Bbox.to('cuda:'+CUDA_DEVICE, non_blocking = True)
-                cam_K = cam_K.cpu().numpy()
+                Bbox = Bbox.to('cuda:'+CUDA_DEVICE, non_blocking = True).float()
+                cam_K = cam_K.to('cuda:'+CUDA_DEVICE, non_blocking=True).float()
+                cam_R_m2c = cam_R_m2c.to('cuda:'+CUDA_DEVICE, non_blocking=True).float() # (B, 3, 3)
+                cam_t_m2c = cam_t_m2c.to('cuda:'+CUDA_DEVICE, non_blocking=True).float() # (B, 3, 1)
+                # ====== 🌟 核心修复区开始 ======
+                # 必须在此处就将平移除以 1000，确保进入 EPro-PnP 的 GT 位姿是【米】
+                cam_t_m2c_m = cam_t_m2c / 1000.0
+                # 将 GT 转换为 EPro-PnP 需要的 (B, 7) 格式
+                gt_q = matrix_to_quaternion(cam_R_m2c) # (B, 4)
+                pose_gt = torch.cat([cam_t_m2c_m.squeeze(-1), gt_q], dim=-1) # (B, 7) 这里的平移现在是米了！
+                # ====== 🌟 核心修复区结束 ======
+
             # 必须指定 device_type，否则 torch.amp.autocast 会报错
             with autocast(device_type='cuda', dtype=torch.float16):
                 pred_results = net.inference_batch(rgb_c, Bbox)
@@ -236,7 +246,7 @@ if __name__ == '__main__':
     
     # The number of epochs between saving checkpoints.
     # 保存检查点的间隔轮数。
-    log_freq = 500
+    log_freq = 250
     
     # Scaling ratio for 2D bounding boxes.
     # 2D 包围盒的缩放比例。
@@ -471,9 +481,6 @@ if __name__ == '__main__':
                     x2d_orig = bx + x_norm.unsqueeze(0) * bw
                     y2d_orig = by + y_norm.unsqueeze(0) * bh
                     coord_2d = torch.stack([x2d_orig, y2d_orig], dim=-1) # [B, 128, 128, 2]
-
-                    # 前面的数据转 GPU 逻辑需要除以 1000 转为米
-                    cam_t_m2c = cam_t_m2c.to('cuda:'+CUDA_DEVICE, non_blocking=True).float() / 1000.0 # [修改] 毫米转米
                     
                     # 5. 高效的 Batched EPro-PnP 端到端计算
                     loss_pose = 0.0
@@ -483,8 +490,8 @@ if __name__ == '__main__':
                             pose_loss_weight = 0.0
                             loss_pose = 0.0 * pred_w2d.sum()
                         else:
-                            # 预热结束后，引入 PnP Loss，初始权重给小一点（根据前向传播的量级，1e-4 比较合适）
-                            pose_loss_weight = 0.1
+                            # 预热结束后，引入 PnP Loss，初始权重给小一点
+                            pose_loss_weight = 0.01
                             
                             valid_x3d = []
                             valid_x2d = []

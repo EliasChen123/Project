@@ -49,10 +49,12 @@ def solve_EPro_PnP(pred_front_np, pred_w2d_np, pred_mask_np, coord_image_np, cam
     )
     # 增加严格的容错处理
     pose_init = None
-    if success_cv and rvec_cv is not None and tvec_cv is not None:
+    # 增加对 tvec_cv[2] > 0 的判断，确保初始化位姿在相机前方
+    if success_cv and rvec_cv is not None and tvec_cv is not None and tvec_cv[2][0] > 0:
         try:
             rot_cv, _ = cv2.Rodrigues(rvec_cv)
             quat_cv = R.from_matrix(rot_cv).as_quat() # Scipy: [x, y, z, w]
+            # EPro-PnP (PyTorch3D) 格式: [w, x, y, z]
             quat_pt = np.array([quat_cv[3], quat_cv[0], quat_cv[1], quat_cv[2]]) 
             pose_init_np = np.concatenate([tvec_cv.flatten(), quat_pt])
             pose_init = torch.from_numpy(pose_init_np).unsqueeze(0).to(device, dtype=torch.float32)
