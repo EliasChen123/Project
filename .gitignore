@@ -1,0 +1,9 @@
+output
+mytest
+.vscode
+tmp
+imgui.ini
+yolo11x.pt
+yolo11n.pt
+.polyscope.ini
+
