@@ -554,9 +554,16 @@ if __name__ == '__main__':
                                     pose_init=batched_pose, force_init_solve=True, with_pose_opt_plus=True
                                 )
                                 # 排除填充造成的 0 权重影响，计算真实的均值作为归一化因子
-                                loss_mc = pose_loss_fn(batched_logweights, batched_cost)
+                                valid_mask = (batched_w2d > 0).float()
+                                norm_factor_all = batched_w2d.sum() / valid_mask.sum().clamp(min=1.0) + 1e-4
+                                loss_mc = pose_loss_fn(batched_logweights, batched_cost, norm_factor_all)
                                 # 可以按有效图片的数量求个均值
-                                loss_pose = loss_mc.mean()
+                                # 使用有效点数进行平均
+                                points_count = valid_mask.sum()
+                                if points_count > 0:
+                                    loss_pose = loss_mc / points_count
+                                else:
+                                    loss_pose = loss_mc.mean()
                                 # 限制最大值防止早期偶尔爆点
                                 loss_pose = torch.clamp(loss_pose, max=200.0)
                             else:
