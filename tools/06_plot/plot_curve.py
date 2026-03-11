@@ -158,7 +158,7 @@ def plot_all_curves(steps, losses, acc_data):
 
 if __name__ == "__main__":
     # 自动寻找最新的log文件
-    log_path = os.path.join(TARGET_DIR, "s4_p2_train_bf_pbr.log")
+    log_path = os.path.join(TARGET_DIR, "train_bf_pbr.log")
     if not os.path.exists(log_path):
         logs = [f for f in os.listdir('.') if f.endswith('.log')]
         if logs:

@@ -195,6 +195,7 @@ if __name__ == '__main__':
 
     # 单卡训练：
     # nohup python -u s4_p2_train_bf_pbr.py > s4_p2_train_bf_pbr.log 2>&1 &
+    # nohup python -u tools/05_bf_train/train_bf_pbr.py > tools/05_bf_train/train_bf_pbr.log 2>&1 &
     # nohup python -u s4_p2_train_bf_pbr.py >> s4_p2_train_bf_pbr.log 2>&1 &
     # '''
     
