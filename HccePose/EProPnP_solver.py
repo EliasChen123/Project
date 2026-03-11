@@ -23,18 +23,16 @@ def solve_EPro_PnP(pred_front_np, pred_w2d_np, pred_mask_np, coord_image_np, cam
     if not np.any(mask):
         return return_info
     # 1. 提取正面点，并将 3D 坐标从毫米转换为米 ( / 1000.0)
-    x3d_np = (pred_front_np[mask].astype(np.float32)) / 1000.0
-    x2d_np = coord_image_np[mask].astype(np.float32)
-    w2d_np = pred_w2d_np[mask].astype(np.float32)
-
-    # pts_f = pred_front_np[mask].astype(np.float32)
-    # pts_2d = coord_image_np[mask].astype(np.float32)
-    # w2d_f = pred_w2d_front_np[mask].astype(np.float32)
-
-    # # 将前后向数据串联在一起
-    # x3d_np = np.concatenate([pts_f], axis=0)
-    # x2d_np = np.concatenate([pts_2d, pts_2d], axis=0)
-    # w2d_np = np.concatenate([w2d_f, w2d_b], axis=0)
+    # ================= 🛡️ 防御性数据转换开始 =================
+    # 1. 提取正面点，强制转换为 float32 且在内存中连续 (contiguous)，防止 OpenCV C++ 报错
+    x3d_np = np.ascontiguousarray((pred_front_np[mask].astype(np.float32)) / 1000.0)
+    x2d_np = np.ascontiguousarray(coord_image_np[mask].astype(np.float32))
+    w2d_np = np.ascontiguousarray(pred_w2d_np[mask].astype(np.float32))
+    # 2. 兼容 cam_K 是 PyTorch Tensor 或非标准 NumPy 数组的情况
+    if hasattr(cam_K, 'detach'): 
+        cam_K = cam_K.detach().cpu().numpy()
+    cam_K_np = np.ascontiguousarray(cam_K, dtype=np.float32)
+    # =========================================================
 
     if x3d_np.shape[0] <= 16:
         return return_info
@@ -42,29 +40,31 @@ def solve_EPro_PnP(pred_front_np, pred_w2d_np, pred_mask_np, coord_image_np, cam
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ================= 核心修复：提供初始位姿 (pose_init) =================
-    # 使用 OpenCV EPnP 提供稳定的初始解，规避 RSLMSolver 在双表面歧义下的崩溃
     # 2. 仅使用正面数据进行初始姿态估计
     success_cv, rvec_cv, tvec_cv = cv2.solvePnP(
-        x3d_np, x2d_np, cam_K, None, flags=cv2.SOLVEPNP_EPNP
+        x3d_np, x2d_np, cam_K_np, None, flags=cv2.SOLVEPNP_EPNP
     )
-    # 增加严格的容错处理
     pose_init = None
+    # 增加严格的容错处理
     # 增加对 tvec_cv[2] > 0 的判断，确保初始化位姿在相机前方
-    if success_cv and rvec_cv is not None and tvec_cv is not None and tvec_cv[2][0] > 0:
-        try:
-            rot_cv, _ = cv2.Rodrigues(rvec_cv)
-            quat_cv = R.from_matrix(rot_cv).as_quat() # Scipy: [x, y, z, w]
-            # EPro-PnP (PyTorch3D) 格式: [w, x, y, z]
-            quat_pt = np.array([quat_cv[3], quat_cv[0], quat_cv[1], quat_cv[2]]) 
-            pose_init_np = np.concatenate([tvec_cv.flatten(), quat_pt])
-            pose_init = torch.from_numpy(pose_init_np).unsqueeze(0).to(device, dtype=torch.float32)
-        except:
-            pose_init = None
+    if success_cv and rvec_cv is not None and tvec_cv is not None:
+        tvec_flat = tvec_cv.flatten()
+        # 确保初始化位姿在相机前方 (Z > 0)
+        if tvec_flat[2] > 0:
+            try:
+                rot_cv, _ = cv2.Rodrigues(rvec_cv)
+                quat_cv = R.from_matrix(rot_cv).as_quat() # Scipy: [x, y, z, w]
+                # EPro-PnP (PyTorch3D) 格式: [w, x, y, z]
+                quat_pt = np.array([quat_cv[3], quat_cv[0], quat_cv[1], quat_cv[2]]) 
+                pose_init_np = np.concatenate([tvec_cv.flatten(), quat_pt])
+                pose_init = torch.from_numpy(pose_init_np).unsqueeze(0).to(device, dtype=torch.float32)
+            except:
+                pose_init = None
     # ======================================================================
     x3d = torch.from_numpy(x3d_np).unsqueeze(0).to(device)  # (1, 2N, 3)
     x2d = torch.from_numpy(x2d_np).unsqueeze(0).to(device)  # (1, 2N, 2)
     w2d = torch.from_numpy(w2d_np).unsqueeze(0).to(device)  # (1, 2N, 2)
-    cam_K_tensor = torch.from_numpy(cam_K).unsqueeze(0).to(device, dtype=torch.float32)
+    cam_K_tensor = torch.from_numpy(cam_K_np).unsqueeze(0).to(device, dtype=torch.float32)
 
     # 实例化推理求解器
     camera = PerspectiveCamera(cam_mats=cam_K_tensor)
