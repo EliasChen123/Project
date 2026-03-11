@@ -8,3 +8,7 @@ yolo11n.pt
 .polyscope.ini
 *.log
 /tools/loss_pic
+__pycache__
+*.pyc
+__pycache__/
+*.pth
