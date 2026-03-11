@@ -7,4 +7,4 @@ yolo11x.pt
 yolo11n.pt
 .polyscope.ini
 *.log
-
+/tools/loss_pic

@@ -321,7 +321,7 @@ class DeepLabV3(nn.Module):
         # 增加了2个通道用于预测w2d
         mask,binary_code,w2d_raw = torch.split(output,[1, self.num_classes - 3, 2],1)
         # 使用 softplus 保证权重为正数（EPro-PnP的要求）
-        w2d = F.softplus(w2d_raw)
+        w2d = torch.sigmoid(w2d_raw) * 10.0
         return mask, binary_code, w2d
 
 class FixedSizeList:
