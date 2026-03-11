@@ -221,7 +221,7 @@ if __name__ == '__main__':
     # Total number of training epochs.
     # 总训练轮数。
     total_iteration = 50001
-    
+    warm_up_step = 1000
     # Learning rate.
     # 学习率。
     lr = 0.0002
@@ -481,7 +481,7 @@ if __name__ == '__main__':
                     loss_pose = 0.0
                     with autocast(device_type='cuda', enabled=False):
                         # --- Warm-up 策略：前 2000 步直接跳过，不仅防止 Loss 爆炸，还能极速提升初期训练速度 ---
-                        if iteration_step < 2000:
+                        if iteration_step < warm_up_step:
                             pose_loss_weight = 0.0
                             loss_pose = 0.0 * pred_w2d.sum()
                         else:
@@ -549,21 +549,37 @@ if __name__ == '__main__':
                                 pnp_cost_fun.set_param(batched_x2d, batched_w2d)
                                 
                                 # 唯一一次调用！此时 GPU 矩阵乘法单元满载，且无需保留多个冗余计算图
-                                _, _, _, _, batched_logweights, batched_cost = pnp_solver.monte_carlo_forward(
+                                # 【修改】：显式添加 with_pose_opt_plus=True，并接收前三个返回值的第三个（pose_opt_plus）
+                                # _, _, _, _, batched_logweights, batched_cost = pnp_solver.monte_carlo_forward(
+                                #     batched_x3d, batched_x2d, batched_w2d, camera, pnp_cost_fun,
+                                #     pose_init=batched_pose, force_init_solve=True
+                                # )
+                                _, _, batched_pose_opt_plus, _, batched_logweights, batched_cost = pnp_solver.monte_carlo_forward(
                                     batched_x3d, batched_x2d, batched_w2d, camera, pnp_cost_fun,
-                                    pose_init=batched_pose, force_init_solve=True
+                                    pose_init=batched_pose, force_init_solve=True, with_pose_opt_plus=True
                                 )
-                                
                                 # 排除填充造成的 0 权重影响，计算真实的均值作为归一化因子
                                 valid_mask = (batched_w2d > 0).float()
                                 norm_factor_all = batched_w2d.sum() / valid_mask.sum().clamp(min=1.0) + 1e-4
-                                
-                                loss_pose = pose_loss_fn(batched_logweights, batched_cost, norm_factor_all)
+                                # 1. 蒙特卡洛分布损失 (Monte Carlo Loss)
+                                loss_mc = pose_loss_fn(batched_logweights, batched_cost, norm_factor_all)
                                 points_count = valid_mask.sum()
                                 if points_count > 0:
-                                    loss_pose = loss_pose / points_count
-                                # [重要安全措施] 防止极端情况下 pose_loss 爆炸
-                                loss_pose = torch.clamp(loss_pose, max=100.0)
+                                    loss_mc = loss_mc / points_count
+                                loss_mc = torch.clamp(loss_mc, max=100.0)
+                                # 【新增】：2. 平移误差损失 (Translation Huber Loss)
+                                # pose_opt_plus 的前三维是平移(tx, ty, tz)
+                                loss_t = (batched_pose_opt_plus[:, :3] - batched_pose[:, :3]).norm(dim=-1)
+                                beta = 0.05
+                                loss_t = torch.where(loss_t < beta, 0.5 * loss_t.square() / beta, loss_t - 0.5 * beta).mean()
+
+                                # 【新增】：3. 旋转误差损失 (Rotation Loss)
+                                # pose_opt_plus 的后四维是四元数
+                                dot_quat = (batched_pose_opt_plus[:, None, 3:] @ batched_pose[:, 3:, None]).squeeze(-1).squeeze(-1)
+                                loss_r = (1 - dot_quat.square()) * 2
+                                loss_r = loss_r.mean()
+                                # 【修改】：将蒙特卡洛分布损失、平移、旋转误差综合到一起
+                                loss_pose = loss_mc + 1.0 * loss_t + 1.0 * loss_r
                             else:
                                 loss_pose = 0.0 * pred_w2d.sum()
                     # === 损失融合 ===
@@ -574,7 +590,7 @@ if __name__ == '__main__':
                     ]
                     # 将位姿损失加入总 Loss，可以给一个初始权重（如 0.1 或 1.0）
 
-                    pose_loss_weight = 0.01
+                    pose_loss_weight = 0.1
                     loss = l_l[0] + l_l[1] + l_l[2] + pose_loss_weight * loss_pose
                     loss = loss / accumulation_steps  # 1. 损失归一化
 
