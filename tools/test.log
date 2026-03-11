@@ -1,0 +1,5 @@
+nvrtc: error: failed to open libnvrtc-builtins.so.13.0.
+  Make sure that libnvrtc-builtins.so.13.0 is installed correctly.
+/home/user/anaconda3/envs/hcce/lib/python3.10/site-packages/nvidia/cu13/lib/
+export LD_LIBRARY_PATH=/home/user/anaconda3/envs/hcce/lib/python3.10/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
+~/.bashrc
